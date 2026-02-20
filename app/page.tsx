@@ -1,65 +1,502 @@
-import Image from 'next/image';
+'use client';
 
-export default function Home() {
+import { SiNpm, SiQiita, SiZenn } from '@icons-pack/react-simple-icons';
+import {
+  Activity,
+  BookOpen,
+  Box,
+  ExternalLink,
+  RefreshCw,
+  Star,
+  Users,
+} from 'lucide-react';
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+import { Badge } from '@/components/ui/badge';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import type { Ga4PageStats, Ga4SiteSummary } from '@/types/ga4';
+import type { GithubOverview } from '@/types/github';
+import type { LaprasPortfolio } from '@/types/lapras';
+import type { NpmPackageSummary } from '@/types/npm';
+import type { QiitaArticle } from '@/types/qiita';
+import type { ZennArticle } from '@/types/zenn';
+import { useEffect, useMemo, useState } from 'react';
+import { DashboardSkeleton } from '@/components/dashboard-skeleton';
+import { Tooltip as CustomTooltip } from '@/components/tooltip';
+import { ModeToggle } from '@/components/mode-toggle';
+
+export default function Dashboard() {
+  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState<{
+    ga4?: { pageStats: Ga4PageStats[]; siteSummary: Ga4SiteSummary };
+    github?: GithubOverview;
+    lapras?: {
+      username: string;
+      portfolio: LaprasPortfolio;
+    };
+    npm?: { packages: NpmPackageSummary[] };
+    qiita?: {
+      totalArticles: number;
+      totalLikes: number;
+      articles: QiitaArticle[];
+    };
+    zenn?: {
+      totalArticles: number;
+      totalLikes: number;
+      articles: ZennArticle[];
+    };
+  }>({});
+
+  useEffect(() => {
+    const fetchAllData = async () => {
+      setLoading(true);
+      try {
+        const [ga4, github, lapras, npm, qiita, zenn] = await Promise.all([
+          fetch('/api/ga4').then((res) => res.json()),
+          fetch('/api/github').then((res) => res.json()),
+          fetch('/api/lapras').then((res) => res.json()),
+          fetch('/api/npm').then((res) => res.json()),
+          fetch('/api/qiita').then((res) => res.json()),
+          fetch('/api/zenn').then((res) => res.json()),
+        ]);
+
+        setData({ ga4, github, lapras, npm, qiita, zenn });
+      } catch (error) {
+        console.error('Failed to fetch dashboard data:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchAllData();
+  }, []);
+
+  // 1. サマリーカード用のデータマッピング
+  const stats = [
+    {
+      title: 'Lapras E-Score',
+      value: data.lapras?.portfolio.e_score?.toFixed(2) || '0.00',
+      icon: Activity,
+      desc: 'Technical skill score',
+    },
+    {
+      title: 'OSS Stars',
+      value: data.github?.totalStars.toLocaleString() || '0',
+      icon: Star,
+      desc: 'Across all repositories',
+    },
+    {
+      title: 'Total Articles',
+      value: (
+        (data.qiita?.totalArticles || 0) + (data.zenn?.totalArticles || 0)
+      ).toString(),
+      icon: BookOpen,
+      desc: 'Zenn & Qiita posts',
+    },
+    {
+      title: 'Monthly Visitors',
+      value: data.ga4?.siteSummary.totalUsers.toLocaleString() || '0',
+      icon: Users,
+      desc: 'Direct from GA4 (30 days)',
+    },
+  ];
+
+  // 2. グラフ用データの整形 (GA4のページ別PVを上位表示)
+  const chartData =
+    data.ga4?.pageStats
+      .filter((p) => p.path !== '/') // トップページ以外
+      .slice(0, 6)
+      .map((p) => ({
+        name: p.path.replace(/\/articles\//, '').substring(0, 10),
+        pv: p.views,
+        uv: p.users,
+      })) || [];
+
+  // 3. 最近のアクティビティ (Laprasの統合フィードを使用)
+  const activities = data.lapras?.portfolio.activities.slice(0, 5) || [];
+
+  // 記事統合・名寄せロジック
+  const mergedArticles = useMemo(() => {
+    const articleMap = new Map<string, any>();
+
+    // Qiita記事の処理
+    data.qiita?.articles.forEach((a: QiitaArticle) => {
+      articleMap.set(a.title, {
+        title: a.title,
+        date: a.updated_at,
+        // QiitaTag[] から string[] に変換
+        tags: a.tags.map((t) => t.name),
+        platforms: [
+          {
+            type: 'Qiita',
+            url: a.url,
+            likes: a.likes_count,
+            stocks: a.stocks_count,
+          },
+        ],
+      });
+    });
+
+    // Zenn記事の処理
+    data.zenn?.articles.forEach((a: ZennArticle) => {
+      const existing = articleMap.get(a.title);
+      const zennUrl = `https://zenn.dev${a.path}`;
+
+      if (existing) {
+        existing.platforms.push({
+          type: 'Zenn',
+          url: zennUrl,
+          likes: a.liked_count,
+        });
+        // タグの重複排除（Zenn側のタグ形式が不明なため、文字列配列と仮定）
+        // existing.tags = Array.from(new Set([...existing.tags, ...(a.tags || [])]));
+
+        if (new Date(a.published_at) > new Date(existing.date)) {
+          existing.date = a.published_at;
+        }
+      } else {
+        articleMap.set(a.title, {
+          title: a.title,
+          date: a.published_at,
+          tags: [], // Zenn API（/articles）にタグが含まれない場合は空配列
+          platforms: [
+            {
+              type: 'Zenn',
+              url: zennUrl,
+              likes: a.liked_count,
+            },
+          ],
+        });
+      }
+    });
+
+    return Array.from(articleMap.values()).sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+    );
+  }, [data.qiita, data.zenn]);
+
+  if (loading) {
+    return <DashboardSkeleton />;
+  }
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{' '}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{' '}
-            or the{' '}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{' '}
-            center.
+    <div className="min-h-screen bg-background text-foreground p-4 md:p-8 space-y-6 container mx-auto">
+      {/* Header */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-3xl font-bold tracking-tight">Dashboard</h2>
+          <p className="text-muted-foreground mt-1">
+            Welcome back. Here is your latest output overview.
           </p>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className="text-xs md:text-sm">
+            <RefreshCw className="h-3 w-3 mr-1" />
+            Live Data Integrated
+          </Badge>
+          <ModeToggle />
         </div>
-      </main>
+      </div>
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {stats.map((stat) => (
+          <Card key={`stat|${stat.title}`} className="shadow-sm">
+            <CardHeader className="flex flex-row items-center justify-between pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">
+                {stat.title}
+              </CardTitle>
+              <stat.icon className="h-4 w-4 text-muted-foreground" />
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold">{stat.value}</div>
+              <p className="text-xs text-muted-foreground mt-1">{stat.desc}</p>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+
+      <Tabs defaultValue="overview" className="space-y-4">
+        <TabsList className="w-full justify-start flex-wrap h-auto gap-y-2">
+          <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="oss">OSS & npm</TabsTrigger>
+          <TabsTrigger value="articles">Articles</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="overview" className="space-y-4">
+          <div className="grid grid-cols-1 lg:grid-cols-7 gap-4">
+            {/* GA4 Chart */}
+            <Card className="lg:col-span-4 shadow-sm">
+              <CardHeader>
+                <CardTitle>Top Pages Traffic</CardTitle>
+                <CardDescription>
+                  Views by page path (Last 30 days)
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="pl-0">
+                <div className="h-[300px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={chartData}
+                      margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+                    >
+                      {/* グリッド線を少し薄くして目立たなくする */}
+                      <CartesianGrid
+                        strokeDasharray="3 3"
+                        vertical={false}
+                        stroke="hsl(var(--border))"
+                        strokeOpacity={0.5}
+                      />
+
+                      {/* 軸のテキスト（tick）の色を明示的に指定 */}
+                      <XAxis
+                        dataKey="name"
+                        stroke="hsl(var(--border))"
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={false}
+                        tick={{ fill: 'hsl(var(--muted-foreground))' }}
+                      />
+                      <YAxis
+                        stroke="hsl(var(--border))"
+                        fontSize={12}
+                        tickLine={false}
+                        axisLine={false}
+                        tick={{ fill: 'hsl(var(--muted-foreground))' }}
+                      />
+
+                      {/* カスタムツールチップを適用し、ホバー時の背景（cursor）をダークテーマに馴染ませる */}
+                      <Tooltip
+                        content={<CustomTooltip />}
+                        cursor={{ fill: 'hsl(var(--muted))', opacity: 0.5 }}
+                      />
+
+                      {/* バーの最大幅を制限して、データが少ない時でも太くなりすぎないようにする */}
+                      <Bar
+                        dataKey="pv"
+                        fill="hsl(var(--primary))"
+                        radius={[4, 4, 0, 0]}
+                        maxBarSize={50}
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Activities from Lapras */}
+            <Card className="lg:col-span-3 shadow-sm flex flex-col">
+              <CardHeader>
+                <CardTitle>Recent Activities</CardTitle>
+                <CardDescription>Aggregated via Lapras</CardDescription>
+              </CardHeader>
+              <CardContent className="flex-1">
+                <div className="space-y-6">
+                  {activities.map((activity) => (
+                    <div
+                      key={`activity|${activity.title}|${activity.date}`}
+                      className="flex items-start justify-between gap-4"
+                    >
+                      <div className="space-y-1 overflow-hidden">
+                        <a
+                          href={activity.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-sm font-medium leading-tight hover:underline flex items-center gap-1"
+                        >
+                          {activity.title}
+                          <ExternalLink className="h-3 w-3 inline opacity-50" />
+                        </a>
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <Badge
+                            variant="secondary"
+                            className="text-[10px] px-1 py-0"
+                          >
+                            {activity.type}
+                          </Badge>
+                          <span>
+                            {new Date(activity.date).toLocaleDateString()}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="oss" className="space-y-4">
+          <Card className="shadow-sm overflow-hidden">
+            <CardHeader>
+              <CardTitle>npm Packages</CardTitle>
+              <CardDescription>
+                Metrics for your published libraries.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="p-0 sm:p-6">
+              {/* モバイルでテーブルがはみ出さないように overflow-x-auto を設定 */}
+              <div className="overflow-x-auto">
+                <Table className="min-w-[600px]">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Package Name</TableHead>
+                      <TableHead>Version</TableHead>
+                      <TableHead>Downloads (Weekly)</TableHead>
+                      <TableHead className="text-right">Size</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {data.npm?.packages.map((pkg) => (
+                      <TableRow key={`npm|${pkg.info.name}`}>
+                        <TableCell className="font-medium flex items-center gap-2">
+                          <SiNpm className="h-4 w-4 text-[#CB3837]" />
+                          {pkg.info.name}
+                        </TableCell>
+                        <TableCell>{pkg.info.version}</TableCell>
+                        <TableCell>
+                          {pkg.downloads.weeklyDownloads.toLocaleString()}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          {pkg.packageSize
+                            ? `${(pkg.packageSize.installSize / 1024).toFixed(1)} kB`
+                            : '-'}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="articles" className="space-y-4">
+          <Card className="shadow-sm overflow-hidden">
+            <CardHeader>
+              <CardTitle>Published Articles</CardTitle>
+              <CardDescription>
+                Deduplicated feed from Zenn and Qiita.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="p-0 sm:p-6">
+              {/* モバイルでテーブルがはみ出さないように overflow-x-auto を設定 */}
+              <div className="overflow-x-auto">
+                <Table className="min-w-[600px]">
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[120px]">Platforms</TableHead>
+                      <TableHead>Title</TableHead>
+                      <TableHead className="text-left w-[150px]">
+                        Engagement
+                      </TableHead>
+                      <TableHead>Tags</TableHead>
+                      <TableHead className="w-[120px]">Latest Update</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {mergedArticles.map((article) => (
+                      <TableRow key={`article|${article.title}`}>
+                        <TableCell>
+                          <div className="flex gap-2">
+                            {article.platforms.map((p: any) => (
+                              <a
+                                key={p.type}
+                                href={p.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className={
+                                  p.type === 'Zenn'
+                                    ? 'text-[#3EA8FF]'
+                                    : 'text-[#55C500]'
+                                }
+                              >
+                                {p.type === 'Zenn' ? (
+                                  <SiZenn className="h-5 w-5" />
+                                ) : (
+                                  <SiQiita className="h-5 w-5" />
+                                )}
+                              </a>
+                            ))}
+                          </div>
+                        </TableCell>
+                        <TableCell className="font-medium max-w-[300px]">
+                          <div className="truncate" title={article.title}>
+                            {article.title}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-left">
+                          <div className="flex flex-col items-start gap-1">
+                            {article.platforms.map((p: any) => (
+                              <div
+                                key={p.type}
+                                className="flex items-center gap-2 text-[11px] text-muted-foreground"
+                              >
+                                <span>{p.type}:</span>
+                                <div className="flex items-center gap-0.5">
+                                  <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />
+                                  <span className="font-mono">{p.likes}</span>
+                                </div>
+                                {p.type === 'Qiita' && (
+                                  <div className="flex items-center gap-0.5 border-l pl-2">
+                                    <Box className="h-3 w-3 text-blue-400" />
+                                    <span className="font-mono">
+                                      {p.stocks}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex flex-wrap gap-1">
+                            {article.tags.slice(0, 3).map((tag: string) => (
+                              <Badge
+                                key={tag}
+                                variant="secondary"
+                                className="text-[10px] font-normal"
+                              >
+                                {tag}
+                              </Badge>
+                            ))}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground text-sm">
+                          {new Date(article.date).toLocaleDateString('ja-JP')}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
