@@ -1,5 +1,6 @@
 'use client';
 
+import useSWR from 'swr';
 import { SiNpm, SiQiita, SiZenn } from '@icons-pack/react-simple-icons';
 import {
   Activity,
@@ -42,56 +43,115 @@ import type { LaprasPortfolio } from '@/types/lapras';
 import type { NpmPackageSummary } from '@/types/npm';
 import type { QiitaArticle } from '@/types/qiita';
 import type { ZennArticle } from '@/types/zenn';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { DashboardSkeleton } from '@/components/dashboard-skeleton';
 import { Tooltip as CustomTooltip } from '@/components/tooltip';
 import { ModeToggle } from '@/components/mode-toggle';
 
+const fetcher = (url: string) => fetch(url).then((res) => res.json());
+
+interface FetcherData {
+  updatedAt: string;
+  ga4?: { pageStats: Ga4PageStats[]; siteSummary: Ga4SiteSummary };
+  github?: GithubOverview;
+  lapras?: {
+    username: string;
+    portfolio: LaprasPortfolio;
+  };
+  npm?: { packages: NpmPackageSummary[] };
+  qiita?: {
+    totalArticles: number;
+    totalLikes: number;
+    articles: QiitaArticle[];
+  };
+  zenn?: {
+    totalArticles: number;
+    totalLikes: number;
+    articles: ZennArticle[];
+  };
+}
+
 export default function Dashboard() {
-  const [loading, setLoading] = useState(true);
-  const [data, setData] = useState<{
-    ga4?: { pageStats: Ga4PageStats[]; siteSummary: Ga4SiteSummary };
-    github?: GithubOverview;
-    lapras?: {
-      username: string;
-      portfolio: LaprasPortfolio;
-    };
-    npm?: { packages: NpmPackageSummary[] };
-    qiita?: {
-      totalArticles: number;
-      totalLikes: number;
-      articles: QiitaArticle[];
-    };
-    zenn?: {
-      totalArticles: number;
-      totalLikes: number;
-      articles: ZennArticle[];
-    };
-  }>({});
+  const { data, error, isLoading } = useSWR<FetcherData>(
+    '/api/dashboard',
+    fetcher,
+    {
+      revalidateOnFocus: true,
+      refreshInterval: 60000,
+    },
+  );
 
-  useEffect(() => {
-    const fetchAllData = async () => {
-      setLoading(true);
-      try {
-        const [ga4, github, lapras, npm, qiita, zenn] = await Promise.all([
-          fetch('/api/ga4').then((res) => res.json()),
-          fetch('/api/github').then((res) => res.json()),
-          fetch('/api/lapras').then((res) => res.json()),
-          fetch('/api/npm').then((res) => res.json()),
-          fetch('/api/qiita').then((res) => res.json()),
-          fetch('/api/zenn').then((res) => res.json()),
-        ]);
+  // 記事統合・名寄せロジック
+  const mergedArticles = useMemo(() => {
+    const articleMap = new Map<string, any>();
 
-        setData({ ga4, github, lapras, npm, qiita, zenn });
-      } catch (error) {
-        console.error('Failed to fetch dashboard data:', error);
-      } finally {
-        setLoading(false);
+    // Qiita記事の処理
+    data?.qiita?.articles.forEach((a: QiitaArticle) => {
+      articleMap.set(a.title, {
+        title: a.title,
+        date: a.updated_at,
+        // QiitaTag[] から string[] に変換
+        tags: a.tags.map((t) => t.name),
+        platforms: [
+          {
+            type: 'Qiita',
+            url: a.url,
+            likes: a.likes_count,
+            stocks: a.stocks_count,
+          },
+        ],
+      });
+    });
+
+    // Zenn記事の処理
+    data?.zenn?.articles.forEach((a: ZennArticle) => {
+      const existing = articleMap.get(a.title);
+      const zennUrl = `https://zenn.dev${a.path}`;
+
+      if (existing) {
+        existing.platforms.push({
+          type: 'Zenn',
+          url: zennUrl,
+          likes: a.liked_count,
+        });
+        // タグの重複排除（Zenn側のタグ形式が不明なため、文字列配列と仮定）
+        // existing.tags = Array.from(new Set([...existing.tags, ...(a.tags || [])]));
+
+        if (new Date(a.published_at) > new Date(existing.date)) {
+          existing.date = a.published_at;
+        }
+      } else {
+        articleMap.set(a.title, {
+          title: a.title,
+          date: a.published_at,
+          tags: [], // Zenn API（/articles）にタグが含まれない場合は空配列
+          platforms: [
+            {
+              type: 'Zenn',
+              url: zennUrl,
+              likes: a.liked_count,
+            },
+          ],
+        });
       }
-    };
+    });
 
-    fetchAllData();
-  }, []);
+    return Array.from(articleMap.values()).sort(
+      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
+    );
+  }, [data?.qiita, data?.zenn]);
+
+  if (isLoading) return <DashboardSkeleton />;
+  if (error)
+    return (
+      <div className="p-8 text-destructive">Failed to load dashboard data.</div>
+    );
+  if (!data)
+    return (
+      <div className="p-8">
+        No data available. Please run the batch update first.
+      </div>
+    );
 
   // 1. サマリーカード用のデータマッピング
   const stats = [
@@ -137,70 +197,6 @@ export default function Dashboard() {
   // 3. 最近のアクティビティ (Laprasの統合フィードを使用)
   const activities = data.lapras?.portfolio.activities.slice(0, 5) || [];
 
-  // 記事統合・名寄せロジック
-  const mergedArticles = useMemo(() => {
-    const articleMap = new Map<string, any>();
-
-    // Qiita記事の処理
-    data.qiita?.articles.forEach((a: QiitaArticle) => {
-      articleMap.set(a.title, {
-        title: a.title,
-        date: a.updated_at,
-        // QiitaTag[] から string[] に変換
-        tags: a.tags.map((t) => t.name),
-        platforms: [
-          {
-            type: 'Qiita',
-            url: a.url,
-            likes: a.likes_count,
-            stocks: a.stocks_count,
-          },
-        ],
-      });
-    });
-
-    // Zenn記事の処理
-    data.zenn?.articles.forEach((a: ZennArticle) => {
-      const existing = articleMap.get(a.title);
-      const zennUrl = `https://zenn.dev${a.path}`;
-
-      if (existing) {
-        existing.platforms.push({
-          type: 'Zenn',
-          url: zennUrl,
-          likes: a.liked_count,
-        });
-        // タグの重複排除（Zenn側のタグ形式が不明なため、文字列配列と仮定）
-        // existing.tags = Array.from(new Set([...existing.tags, ...(a.tags || [])]));
-
-        if (new Date(a.published_at) > new Date(existing.date)) {
-          existing.date = a.published_at;
-        }
-      } else {
-        articleMap.set(a.title, {
-          title: a.title,
-          date: a.published_at,
-          tags: [], // Zenn API（/articles）にタグが含まれない場合は空配列
-          platforms: [
-            {
-              type: 'Zenn',
-              url: zennUrl,
-              likes: a.liked_count,
-            },
-          ],
-        });
-      }
-    });
-
-    return Array.from(articleMap.values()).sort(
-      (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime(),
-    );
-  }, [data.qiita, data.zenn]);
-
-  if (loading) {
-    return <DashboardSkeleton />;
-  }
-
   return (
     <div className="min-h-screen bg-background text-foreground p-4 md:p-8 space-y-6 container mx-auto">
       {/* Header */}
@@ -214,7 +210,7 @@ export default function Dashboard() {
         <div className="flex items-center gap-2">
           <Badge variant="outline" className="text-xs md:text-sm">
             <RefreshCw className="h-3 w-3 mr-1" />
-            Live Data Integrated
+            Sync: {new Date(data.updatedAt).toLocaleString('ja-JP')}
           </Badge>
           <ModeToggle />
         </div>
