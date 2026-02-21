@@ -28,16 +28,7 @@ export async function GET(request: Request) {
 
   try {
     // 全外部APIを並列でフェッチ
-    const [
-      ga4PageStats,
-      ga4TrafficSources,
-      ga4SiteSummary,
-      github,
-      laprasPortfolio,
-      npmResults,
-      qiitaArticles,
-      zennArticles,
-    ] = await Promise.all([
+    const results = await Promise.allSettled([
       getWebsiteStats(),
       getTrafficSources(),
       getSiteSummary(),
@@ -48,38 +39,79 @@ export async function GET(request: Request) {
       fetchAllZennArticles(ZENN_USERNAME),
     ]);
 
+    // 結果を安全に展開する
+    const [
+      ga4PageStatsRes,
+      ga4TrafficSources,
+      ga4SiteSummaryRes,
+      githubRes,
+      laprasRes,
+      npmRes,
+      qiitaRes,
+      zennRes,
+    ] = results;
+
+    // 失敗したものを特定してログ出力（デバッグ用）
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        console.error(`API Fetch Error [Index: ${index}]:`, result.reason);
+      }
+    });
+
+    const updateData: any = { updatedAt: new Date().toISOString() };
+    if (ga4PageStatsRes.status === 'fulfilled')
+      updateData.ga4.pageStats = ga4PageStatsRes.value;
+    if (ga4TrafficSources.status === 'fulfilled')
+      updateData.ga4.trafficSources = ga4TrafficSources.value;
+    if (ga4SiteSummaryRes.status === 'fulfilled')
+      updateData.ga4.siteSummary = ga4SiteSummaryRes.value;
+    if (githubRes.status === 'fulfilled') updateData.github = githubRes.value;
+    if (laprasRes.status === 'fulfilled') updateData.lapras = laprasRes.value;
+    if (npmRes.status === 'fulfilled') updateData.npm = npmRes.value;
+    if (qiitaRes.status === 'fulfilled') updateData.qiita = qiitaRes.value;
+    if (zennRes.status === 'fulfilled') updateData.zenn = zennRes.value;
+
     // 1つのオブジェクトにまとめる
     const aggregatedData = {
       updatedAt: new Date().toISOString(),
       ga4: {
-        pageStats: ga4PageStats,
-        trafficSources: ga4TrafficSources,
-        siteSummary: ga4SiteSummary,
+        pageStats: updateData.ga4?.pageStats,
+        trafficSources: updateData.ga4?.trafficSources,
+        siteSummary: updateData.ga4?.siteSummary,
       },
-      github,
+      github: updateData.github,
       lapras: {
         scores: {
-          e_score: laprasPortfolio.e_score,
-          b_score: laprasPortfolio.b_score,
-          i_score: laprasPortfolio.i_score,
+          e_score: updateData.lapras?.e_score,
+          b_score: updateData.lapras?.b_score,
+          i_score: updateData.lapras?.i_score,
         },
-        portfolio: laprasPortfolio,
+        portfolio: updateData.lapras,
       },
-      npm: { packages: npmResults },
+      npm: { packages: updateData.npm },
       qiita: {
-        totalArticles: qiitaArticles.length,
-        totalLikes: qiitaArticles.reduce((sum, a) => sum + a.likes_count, 0),
-        articles: qiitaArticles,
+        totalArticles: updateData.qiita?.length,
+        totalLikes: updateData.qiita?.reduce(
+          (sum: number, a: any) => sum + a.likes_count,
+          0,
+        ),
+        articles: updateData.qiita,
       },
       zenn: {
-        totalArticles: zennArticles.length,
-        totalLikes: zennArticles.reduce((sum, a) => sum + a.liked_count, 0),
-        articles: zennArticles,
+        totalArticles: updateData.zenn?.length,
+        totalLikes: updateData.zenn?.reduce(
+          (sum: number, a: any) => sum + a.liked_count,
+          0,
+        ),
+        articles: updateData.zenn,
       },
     };
 
     // Firestore に保存 (ドキュメントを上書き)
-    await db.collection('dashboard').doc('latest').set(aggregatedData);
+    await db
+      .collection('dashboard')
+      .doc('latest')
+      .set(updateData, { merge: true });
 
     return NextResponse.json({
       message: 'Dashboard data updated successfully',

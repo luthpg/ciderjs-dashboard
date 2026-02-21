@@ -33,6 +33,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { truncateByDisplayWidth } from '@/lib/utils';
 import type { Ga4PageStats, Ga4SiteSummary } from '@/types/ga4';
 import type { GithubOverview } from '@/types/github';
 import type { LaprasPortfolio } from '@/types/lapras';
@@ -145,10 +146,8 @@ export default function Dashboard() {
       const views = matchedGaData ? Number(matchedGaData.views) : 0;
 
       return {
-        displayTitle:
-          article.title.length > 10
-            ? `${article.title.substring(0, 10)}...`
-            : article.title,
+        fullTitle: article.title,
+        displayTitle: truncateByDisplayWidth(article.title, 12),
         PV: views, // カテゴリ1: キー名を'PV'に変更
         いいね: article.liked_count, // カテゴリ2: Zennのいいね数を追加
       };
@@ -203,8 +202,6 @@ export default function Dashboard() {
   // 最近のアクティビティ (Laprasの統合フィードを使用)
   const activities = data.lapras?.portfolio.activities.slice(0, 5) || [];
 
-  const chartHeight = articleViewsData.length * 40; // 1件あたり40px確保する
-
   return (
     <div className="min-h-screen bg-background text-foreground p-4 md:p-8 space-y-6 container mx-auto">
       {/* Header */}
@@ -254,14 +251,16 @@ export default function Dashboard() {
             {/* GA4 Chart */}
             <Card className="shadow-sm">
               <CardHeader>
-                <CardTitle>記事別 ビュー数ランキング (Zenn × GA4)</CardTitle>
+                <CardTitle>記事別 ビュー数 (Zenn)</CardTitle>
                 <CardDescription>
                   Zennで公開した記事のアクセス数トップ10
                 </CardDescription>
               </CardHeader>
               <CardContent className="pl-0">
-                <div className="h-[300px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
+                {/* 1. 外側のコンテナに overflow-x-auto を設定 */}
+                <div className="w-full overflow-x-auto pb-4 custom-scrollbar">
+                  {/* 2. 内部のコンテナに min-width を設定。md（デスクトップ）以上では 100% に戻す */}
+                  <div className="min-w-[600px] w-full h-[450px]">
                     <BarChart
                       data={articleViewsData}
                       index="displayTitle"
@@ -272,10 +271,10 @@ export default function Dashboard() {
                         Intl.NumberFormat('ja-JP').format(number)
                       }
                       showLegend={true}
-                      className="text-muted-foreground"
+                      className="text-muted-foreground h-full w-full"
                       yAxisWidth={200}
                     />
-                  </ResponsiveContainer>
+                  </div>
                 </div>
               </CardContent>
             </Card>

@@ -703,6 +703,8 @@ const BarChart = React.forwardRef<HTMLDivElement, BarChartProps>(
               tick={{
                 transform:
                   layout !== 'vertical' ? 'translate(0, 6)' : undefined,
+                className: 'fill-muted-foreground',
+                fontSize: 12,
               }}
               fill=""
               stroke=""
@@ -766,6 +768,8 @@ const BarChart = React.forwardRef<HTMLDivElement, BarChartProps>(
                   layout !== 'vertical'
                     ? 'translate(-3, 0)'
                     : 'translate(0, 0)',
+                className: 'fill-muted-foreground',
+                fontSize: 12,
               }}
               {...(layout !== 'vertical'
                 ? {
