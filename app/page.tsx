@@ -1,6 +1,5 @@
 'use client';
 
-import useSWR from 'swr';
 import { SiNpm, SiQiita, SiZenn } from '@icons-pack/react-simple-icons';
 import {
   Activity,
@@ -11,16 +10,13 @@ import {
   Star,
   Users,
 } from 'lucide-react';
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts';
+import { useMemo } from 'react';
+import { ResponsiveContainer } from 'recharts';
+import useSWR from 'swr';
+import { DashboardSkeleton } from '@/components/dashboard-skeleton';
+import { ModeToggle } from '@/components/mode-toggle';
 import { Badge } from '@/components/ui/badge';
+import { BarChart } from '@/components/ui/bar-chart';
 import {
   Card,
   CardContent,
@@ -43,10 +39,6 @@ import type { LaprasPortfolio } from '@/types/lapras';
 import type { NpmPackageSummary } from '@/types/npm';
 import type { QiitaArticle } from '@/types/qiita';
 import type { ZennArticle } from '@/types/zenn';
-import { useMemo } from 'react';
-import { DashboardSkeleton } from '@/components/dashboard-skeleton';
-import { Tooltip as CustomTooltip } from '@/components/tooltip';
-import { ModeToggle } from '@/components/mode-toggle';
 
 const fetcher = (url: string) => fetch(url).then((res) => res.json());
 
@@ -141,6 +133,31 @@ export default function Dashboard() {
     );
   }, [data?.qiita, data?.zenn]);
 
+  // GA4データとZenn記事データのマージ
+  const articleViewsData = useMemo(() => {
+    if (!data?.zenn?.articles || !data?.ga4?.pageStats) return [];
+
+    const merged = data.zenn.articles.map((article: any) => {
+      const slug = article.slug || article.path.split('/').pop();
+      const matchedGaData = data.ga4?.pageStats.find((ga: any) =>
+        ga.path.includes(slug),
+      );
+      const views = matchedGaData ? Number(matchedGaData.views) : 0;
+
+      return {
+        displayTitle:
+          article.title.length > 10
+            ? `${article.title.substring(0, 10)}...`
+            : article.title,
+        PV: views, // カテゴリ1: キー名を'PV'に変更
+        いいね: article.liked_count, // カテゴリ2: Zennのいいね数を追加
+      };
+    });
+
+    // PV数が多い順にソートし、トップ10を取得
+    return merged.sort((a: any, b: any) => b['PV'] - a['PV']).slice(0, 10);
+  }, [data]);
+
   if (isLoading) return <DashboardSkeleton />;
   if (error)
     return (
@@ -153,7 +170,7 @@ export default function Dashboard() {
       </div>
     );
 
-  // 1. サマリーカード用のデータマッピング
+  // サマリーカード用のデータマッピング
   const stats = [
     {
       title: 'Lapras E-Score',
@@ -183,19 +200,10 @@ export default function Dashboard() {
     },
   ];
 
-  // 2. グラフ用データの整形 (GA4のページ別PVを上位表示)
-  const chartData =
-    data.ga4?.pageStats
-      .filter((p) => p.path !== '/') // トップページ以外
-      .slice(0, 6)
-      .map((p) => ({
-        name: p.path.replace(/\/articles\//, '').substring(0, 10),
-        pv: p.views,
-        uv: p.users,
-      })) || [];
-
-  // 3. 最近のアクティビティ (Laprasの統合フィードを使用)
+  // 最近のアクティビティ (Laprasの統合フィードを使用)
   const activities = data.lapras?.portfolio.activities.slice(0, 5) || [];
+
+  const chartHeight = articleViewsData.length * 40; // 1件あたり40px確保する
 
   return (
     <div className="min-h-screen bg-background text-foreground p-4 md:p-8 space-y-6 container mx-auto">
@@ -242,68 +250,38 @@ export default function Dashboard() {
         </TabsList>
 
         <TabsContent value="overview" className="space-y-4">
-          <div className="grid grid-cols-1 lg:grid-cols-7 gap-4">
+          <div className="grid grid-cols-1 gap-4">
             {/* GA4 Chart */}
-            <Card className="lg:col-span-4 shadow-sm">
+            <Card className="shadow-sm">
               <CardHeader>
-                <CardTitle>Top Pages Traffic</CardTitle>
+                <CardTitle>記事別 ビュー数ランキング (Zenn × GA4)</CardTitle>
                 <CardDescription>
-                  Views by page path (Last 30 days)
+                  Zennで公開した記事のアクセス数トップ10
                 </CardDescription>
               </CardHeader>
               <CardContent className="pl-0">
                 <div className="h-[300px] w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <BarChart
-                      data={chartData}
-                      margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
-                    >
-                      {/* グリッド線を少し薄くして目立たなくする */}
-                      <CartesianGrid
-                        strokeDasharray="3 3"
-                        vertical={false}
-                        stroke="hsl(var(--border))"
-                        strokeOpacity={0.5}
-                      />
-
-                      {/* 軸のテキスト（tick）の色を明示的に指定 */}
-                      <XAxis
-                        dataKey="name"
-                        stroke="hsl(var(--border))"
-                        fontSize={12}
-                        tickLine={false}
-                        axisLine={false}
-                        tick={{ fill: 'hsl(var(--muted-foreground))' }}
-                      />
-                      <YAxis
-                        stroke="hsl(var(--border))"
-                        fontSize={12}
-                        tickLine={false}
-                        axisLine={false}
-                        tick={{ fill: 'hsl(var(--muted-foreground))' }}
-                      />
-
-                      {/* カスタムツールチップを適用し、ホバー時の背景（cursor）をダークテーマに馴染ませる */}
-                      <Tooltip
-                        content={<CustomTooltip />}
-                        cursor={{ fill: 'hsl(var(--muted))', opacity: 0.5 }}
-                      />
-
-                      {/* バーの最大幅を制限して、データが少ない時でも太くなりすぎないようにする */}
-                      <Bar
-                        dataKey="pv"
-                        fill="hsl(var(--primary))"
-                        radius={[4, 4, 0, 0]}
-                        maxBarSize={50}
-                      />
-                    </BarChart>
+                      data={articleViewsData}
+                      index="displayTitle"
+                      categories={['PV', 'いいね']}
+                      colors={['emerald', 'cyan']}
+                      layout="vertical"
+                      valueFormatter={(number: number) =>
+                        Intl.NumberFormat('ja-JP').format(number)
+                      }
+                      showLegend={true}
+                      className="text-muted-foreground"
+                      yAxisWidth={200}
+                    />
                   </ResponsiveContainer>
                 </div>
               </CardContent>
             </Card>
 
             {/* Activities from Lapras */}
-            <Card className="lg:col-span-3 shadow-sm flex flex-col">
+            <Card className="shadow-sm flex flex-col">
               <CardHeader>
                 <CardTitle>Recent Activities</CardTitle>
                 <CardDescription>Aggregated via Lapras</CardDescription>

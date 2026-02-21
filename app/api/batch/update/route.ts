@@ -1,7 +1,5 @@
 import { NextResponse } from 'next/server';
-import { db } from '@/lib/firebase-admin';
 import { env } from '@/lib/env';
-
 // 各種フェッチャーのインポート
 import {
   getSiteSummary,
@@ -13,6 +11,7 @@ import { fetchLaprasStats } from '@/lib/fetchers/lapras';
 import { fetchNpmPackageSummary } from '@/lib/fetchers/npm';
 import { fetchQiitaArticles } from '@/lib/fetchers/qiita';
 import { fetchAllZennArticles } from '@/lib/fetchers/zenn';
+import { db } from '@/lib/firebase-admin';
 
 const GITHUB_OWNER = env.NEXT_PUBLIC_GITHUB_USER_NAME;
 const LAPRAS_USERNAME = env.NEXT_PUBLIC_USER_NAME;
