@@ -58,7 +58,7 @@ export async function GET(request: Request) {
       }
     });
 
-    const updateData: any = { updatedAt: new Date().toISOString() };
+    const updateData: any = { updatedAt: new Date().toISOString(), ga4: {} };
     if (ga4PageStatsRes.status === 'fulfilled')
       updateData.ga4.pageStats = ga4PageStatsRes.value;
     if (ga4TrafficSources.status === 'fulfilled')
@@ -111,7 +111,7 @@ export async function GET(request: Request) {
     await db
       .collection('dashboard')
       .doc('latest')
-      .set(updateData, { merge: true });
+      .set(aggregatedData, { merge: true });
 
     return NextResponse.json({
       message: 'Dashboard data updated successfully',

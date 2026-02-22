@@ -11,7 +11,6 @@ import {
   Users,
 } from 'lucide-react';
 import { useMemo } from 'react';
-import { ResponsiveContainer } from 'recharts';
 import useSWR from 'swr';
 import { DashboardSkeleton } from '@/components/dashboard-skeleton';
 import { ModeToggle } from '@/components/mode-toggle';
@@ -76,25 +75,21 @@ export default function Dashboard() {
 
   // 記事統合・名寄せロジック
   const mergedArticles = useMemo(() => {
-    const articleMap = new Map<string, any>();
-
-    // Qiita記事の処理
-    data?.qiita?.articles.forEach((a: QiitaArticle) => {
-      articleMap.set(a.title, {
-        title: a.title,
-        date: a.updated_at,
-        // QiitaTag[] から string[] に変換
-        tags: a.tags.map((t) => t.name),
-        platforms: [
-          {
-            type: 'Qiita',
-            url: a.url,
-            likes: a.likes_count,
-            stocks: a.stocks_count,
-          },
-        ],
-      });
-    });
+    const articleMap = new Map<
+      string,
+      {
+        title: string;
+        date: string;
+        tags: string[];
+        platforms: {
+          emoji?: string;
+          type: string;
+          url: string;
+          likes: number;
+          stocks: number;
+        }[];
+      }
+    >();
 
     // Zenn記事の処理
     data?.zenn?.articles.forEach((a: ZennArticle) => {
@@ -103,12 +98,12 @@ export default function Dashboard() {
 
       if (existing) {
         existing.platforms.push({
+          emoji: a.emoji,
           type: 'Zenn',
           url: zennUrl,
           likes: a.liked_count,
+          stocks: a.bookmarked_count,
         });
-        // タグの重複排除（Zenn側のタグ形式が不明なため、文字列配列と仮定）
-        // existing.tags = Array.from(new Set([...existing.tags, ...(a.tags || [])]));
 
         if (new Date(a.published_at) > new Date(existing.date)) {
           existing.date = a.published_at;
@@ -121,8 +116,43 @@ export default function Dashboard() {
           platforms: [
             {
               type: 'Zenn',
+              emoji: a.emoji,
               url: zennUrl,
               likes: a.liked_count,
+              stocks: a.bookmarked_count,
+            },
+          ],
+        });
+      }
+    });
+
+    // Qiita記事の処理
+    data?.qiita?.articles.forEach((a: QiitaArticle) => {
+      const existing = articleMap.get(a.title);
+      if (existing) {
+        existing.platforms.push({
+          type: 'Qiita',
+          url: a.url,
+          likes: a.likes_count,
+          stocks: a.stocks_count,
+        });
+        existing.tags.push(...a.tags.map((t) => t.name));
+
+        if (new Date(a.updated_at) > new Date(existing.date)) {
+          existing.date = a.updated_at;
+        }
+      } else {
+        articleMap.set(a.title, {
+          title: a.title,
+          date: a.updated_at,
+          // QiitaTag[] から string[] に変換
+          tags: a.tags.map((t) => t.name),
+          platforms: [
+            {
+              type: 'Qiita',
+              url: a.url,
+              likes: a.likes_count,
+              stocks: a.stocks_count,
             },
           ],
         });
@@ -146,15 +176,15 @@ export default function Dashboard() {
       const views = matchedGaData ? Number(matchedGaData.views) : 0;
 
       return {
-        fullTitle: article.title,
-        displayTitle: truncateByDisplayWidth(article.title, 12),
+        fullTitle: `${article.emoji} ${article.title}`,
+        displayTitle: truncateByDisplayWidth(article.title, 11),
         PV: views, // カテゴリ1: キー名を'PV'に変更
         いいね: article.liked_count, // カテゴリ2: Zennのいいね数を追加
       };
     });
 
     // PV数が多い順にソートし、トップ10を取得
-    return merged.sort((a: any, b: any) => b['PV'] - a['PV']).slice(0, 10);
+    return merged.sort((a: any, b: any) => b.PV - a.PV).slice(0, 10);
   }, [data]);
 
   if (isLoading) return <DashboardSkeleton />;
@@ -172,45 +202,45 @@ export default function Dashboard() {
   // サマリーカード用のデータマッピング
   const stats = [
     {
-      title: 'Lapras E-Score',
+      title: 'Lapras 技術スコア',
       value: data.lapras?.portfolio.e_score?.toFixed(2) || '0.00',
       icon: Activity,
-      desc: 'Technical skill score',
+      desc: 'Laprasによる技術スコア評価値',
     },
     {
-      title: 'OSS Stars',
+      title: 'GitHub Stars',
       value: data.github?.totalStars.toLocaleString() || '0',
       icon: Star,
-      desc: 'Across all repositories',
+      desc: 'GitHubリポジトリ全体のスター数',
     },
     {
-      title: 'Total Articles',
+      title: '記事数',
       value: (
         (data.qiita?.totalArticles || 0) + (data.zenn?.totalArticles || 0)
       ).toString(),
       icon: BookOpen,
-      desc: 'Zenn & Qiita posts',
+      desc: 'Zenn & Qiitaの合計記事数',
     },
     {
-      title: 'Monthly Visitors',
+      title: '月間訪問者数',
       value: data.ga4?.siteSummary.totalUsers.toLocaleString() || '0',
       icon: Users,
-      desc: 'Direct from GA4 (30 days)',
+      desc: 'Zenn記事の合計訪問者数（過去30日間）',
     },
   ];
 
   // 最近のアクティビティ (Laprasの統合フィードを使用)
-  const activities = data.lapras?.portfolio.activities.slice(0, 5) || [];
+  const activities = data.lapras?.portfolio.activities.slice(0, 15) || [];
 
   return (
     <div className="min-h-screen bg-background text-foreground p-4 md:p-8 space-y-6 container mx-auto">
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Dashboard</h2>
-          <p className="text-muted-foreground mt-1">
-            Welcome back. Here is your latest output overview.
-          </p>
+          <h2 className="text-3xl font-bold tracking-tight">
+            Ciderjs Dashboard
+          </h2>
+          <p className="text-muted-foreground mt-1">最新のアウトプットの概要</p>
         </div>
         <div className="flex items-center gap-2">
           <Badge variant="outline" className="text-xs md:text-sm">
@@ -282,8 +312,8 @@ export default function Dashboard() {
             {/* Activities from Lapras */}
             <Card className="shadow-sm flex flex-col">
               <CardHeader>
-                <CardTitle>Recent Activities</CardTitle>
-                <CardDescription>Aggregated via Lapras</CardDescription>
+                <CardTitle>最近の活動</CardTitle>
+                <CardDescription>Laprasによる統合フィード</CardDescription>
               </CardHeader>
               <CardContent className="flex-1">
                 <div className="space-y-6">
@@ -326,9 +356,7 @@ export default function Dashboard() {
           <Card className="shadow-sm overflow-hidden">
             <CardHeader>
               <CardTitle>npm Packages</CardTitle>
-              <CardDescription>
-                Metrics for your published libraries.
-              </CardDescription>
+              <CardDescription>公開ライブラリの指標</CardDescription>
             </CardHeader>
             <CardContent className="p-0 sm:p-6">
               {/* モバイルでテーブルがはみ出さないように overflow-x-auto を設定 */}
@@ -336,10 +364,12 @@ export default function Dashboard() {
                 <Table className="min-w-[600px]">
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Package Name</TableHead>
-                      <TableHead>Version</TableHead>
-                      <TableHead>Downloads (Weekly)</TableHead>
-                      <TableHead className="text-right">Size</TableHead>
+                      <TableHead>パッケージ名</TableHead>
+                      <TableHead>バージョン</TableHead>
+                      <TableHead>ダウンロード数（週次）</TableHead>
+                      <TableHead className="text-right">
+                        インストールサイズ
+                      </TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -370,10 +400,8 @@ export default function Dashboard() {
         <TabsContent value="articles" className="space-y-4">
           <Card className="shadow-sm overflow-hidden">
             <CardHeader>
-              <CardTitle>Published Articles</CardTitle>
-              <CardDescription>
-                Deduplicated feed from Zenn and Qiita.
-              </CardDescription>
+              <CardTitle>公開記事</CardTitle>
+              <CardDescription>ZennとQiitaの記事一覧</CardDescription>
             </CardHeader>
             <CardContent className="p-0 sm:p-6">
               {/* モバイルでテーブルがはみ出さないように overflow-x-auto を設定 */}
@@ -381,13 +409,15 @@ export default function Dashboard() {
                 <Table className="min-w-[600px]">
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-[120px]">Platforms</TableHead>
-                      <TableHead>Title</TableHead>
-                      <TableHead className="text-left w-[150px]">
-                        Engagement
+                      <TableHead className="w-[120px]">
+                        プラットフォーム
                       </TableHead>
-                      <TableHead>Tags</TableHead>
-                      <TableHead className="w-[120px]">Latest Update</TableHead>
+                      <TableHead>タイトル</TableHead>
+                      <TableHead className="text-left w-[150px]">
+                        エンゲージメント
+                      </TableHead>
+                      <TableHead>タグ</TableHead>
+                      <TableHead className="w-[120px]">最終更新日</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -416,9 +446,21 @@ export default function Dashboard() {
                             ))}
                           </div>
                         </TableCell>
-                        <TableCell className="font-medium max-w-[300px]">
+                        <TableCell className="font-medium max-w-[400px]">
                           <div className="truncate" title={article.title}>
-                            {article.title}
+                            <a
+                              key={article.platforms[0].type}
+                              href={article.platforms[0].url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className={
+                                article.platforms[0].type === 'Zenn'
+                                  ? 'text-[#3EA8FF]'
+                                  : 'text-[#55C500]'
+                              }
+                            >
+                              {article.title}
+                            </a>
                           </div>
                         </TableCell>
                         <TableCell className="text-left">
@@ -433,14 +475,10 @@ export default function Dashboard() {
                                   <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />
                                   <span className="font-mono">{p.likes}</span>
                                 </div>
-                                {p.type === 'Qiita' && (
-                                  <div className="flex items-center gap-0.5 border-l pl-2">
-                                    <Box className="h-3 w-3 text-blue-400" />
-                                    <span className="font-mono">
-                                      {p.stocks}
-                                    </span>
-                                  </div>
-                                )}
+                                <div className="flex items-center gap-0.5 border-l pl-2">
+                                  <Box className="h-3 w-3 text-blue-400" />
+                                  <span className="font-mono">{p.stocks}</span>
+                                </div>
                               </div>
                             ))}
                           </div>
