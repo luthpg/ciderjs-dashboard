@@ -1,6 +1,7 @@
 import path from 'node:path';
 import util from 'node:util';
 import zlib from 'node:zlib';
+import { unstable_cache } from 'next/cache';
 import { type Plugin, rolldown } from 'rolldown';
 import { minify } from 'terser';
 import type {
@@ -14,72 +15,101 @@ import type {
 const gzipAsync = util.promisify(zlib.gzip);
 
 /**
+ * Proxyを利用したインメモリのPromiseキャッシュラッパー
+ * 同一プロセス（バッチ実行中など）での重複リクエストを統合し、1回だけ実行させます。
+ */
+function withMemoryCache<T extends (...args: any[]) => Promise<any>>(fn: T): T {
+  const cache = new Map<string, Promise<any>>();
+
+  return new Proxy(fn, {
+    apply(target, thisArg, args) {
+      // 引数を元にキャッシュキーを生成（簡易的にJSON.stringifyを使用）
+      const key = JSON.stringify(args);
+
+      if (cache.has(key)) {
+        return cache.get(key);
+      }
+
+      // キャッシュミス時は元の関数を実行し、そのPromiseをキャッシュ
+      const promise = Reflect.apply(target, thisArg, args).catch((err) => {
+        // エラー時はキャッシュを破棄して次回の再試行を可能にする
+        cache.delete(key);
+        throw err;
+      });
+
+      cache.set(key, promise);
+      return promise;
+    },
+  });
+}
+
+/**
  * npm Registry からパッケージのメタデータを取得
  */
-export async function fetchNpmPackageInfo(
-  packageName: string,
-): Promise<NpmPackageInfo> {
-  const res = await fetch(`https://registry.npmjs.org/${packageName}/latest`);
+export const fetchNpmPackageInfo = withMemoryCache(
+  async (packageName: string): Promise<NpmPackageInfo> => {
+    const res = await fetch(`https://registry.npmjs.org/${packageName}/latest`);
 
-  if (!res.ok) {
-    console.error(await res.text());
-    throw new Error(
-      `[npm] Failed to fetch package info for ${packageName}: ${res.status}`,
-    );
-  }
+    if (!res.ok) {
+      console.error(await res.text());
+      throw new Error(
+        `[npm] Failed to fetch package info for ${packageName}: ${res.status}`,
+      );
+    }
 
-  const data = await res.json();
-  return {
-    name: data.name,
-    version: data.version,
-    description: data.description ?? '',
-    lastPublished: data.time ?? new Date().toISOString(),
-    url: `https://www.npmjs.com/package/${packageName}`,
-  };
-}
+    const data = await res.json();
+    return {
+      name: data.name,
+      version: data.version,
+      description: data.description ?? '',
+      lastPublished: data.time ?? new Date().toISOString(),
+      url: `https://www.npmjs.com/package/${packageName}`,
+    };
+  },
+);
 
 /**
  * npm Registry の downloads API からダウンロード統計を取得
  */
-export async function fetchNpmDownloads(
-  packageName: string,
-): Promise<NpmDownloadStats> {
-  // 日別ダウンロード数 (直近30日)
-  const rangeRes = await fetch(
-    `https://api.npmjs.org/downloads/range/last-month/${packageName}`,
-  );
-
-  if (!rangeRes.ok) {
-    throw new Error(
-      `[npm] Failed to fetch downloads for ${packageName}: ${rangeRes.status}`,
+export const fetchNpmDownloads = withMemoryCache(
+  async (packageName: string): Promise<NpmDownloadStats> => {
+    // 日別ダウンロード数 (直近30日)
+    const rangeRes = await fetch(
+      `https://api.npmjs.org/downloads/range/last-month/${packageName}`,
     );
-  }
 
-  const rangeData: { downloads: Array<{ day: string; downloads: number }> } =
-    await rangeRes.json();
+    if (!rangeRes.ok) {
+      throw new Error(
+        `[npm] Failed to fetch downloads for ${packageName}: ${rangeRes.status}`,
+      );
+    }
 
-  const dailyDownloads: NpmDailyDownload[] = rangeData.downloads.map((d) => ({
-    day: d.day,
-    downloads: d.downloads,
-  }));
+    const rangeData: { downloads: Array<{ day: string; downloads: number }> } =
+      await rangeRes.json();
 
-  const monthlyDownloads = dailyDownloads.reduce(
-    (sum, d) => sum + d.downloads,
-    0,
-  );
+    const dailyDownloads: NpmDailyDownload[] = rangeData.downloads.map((d) => ({
+      day: d.day,
+      downloads: d.downloads,
+    }));
 
-  // 直近7日間
-  const weeklyDownloads = dailyDownloads
-    .slice(-7)
-    .reduce((sum, d) => sum + d.downloads, 0);
+    const monthlyDownloads = dailyDownloads.reduce(
+      (sum, d) => sum + d.downloads,
+      0,
+    );
 
-  return {
-    package: packageName,
-    weeklyDownloads,
-    monthlyDownloads,
-    dailyDownloads,
-  };
-}
+    // 直近7日間
+    const weeklyDownloads = dailyDownloads
+      .slice(-7)
+      .reduce((sum, d) => sum + d.downloads, 0);
+
+    return {
+      package: packageName,
+      weeklyDownloads,
+      monthlyDownloads,
+      dailyDownloads,
+    };
+  },
+);
 
 /**
  * http-resolve Plugin
@@ -187,10 +217,7 @@ export async function fetchPackageSize(
       installSize: gzipped.byteLength, // Gzip後のサイズ (Bytes)
     };
   } catch (err) {
-    console.warn(
-      `[SizeCalculator] Error fetching size for ${packageName}:`,
-      err,
-    );
+    console.warn(`[PackageSize] Error fetching size for ${packageName}:`, err);
     return null;
   }
 }
@@ -201,10 +228,23 @@ export async function fetchPackageSize(
 export async function fetchNpmPackageSummary(
   packageName: string,
 ): Promise<NpmPackageSummary> {
-  const [info, downloads, packageSize] = await Promise.all([
-    fetchNpmPackageInfo(packageName),
+  const info = await fetchNpmPackageInfo(packageName);
+
+  // Next.jsの永続キャッシュ機構 (バンドルサイズ計算などの重い処理用)
+  const getCachedPackageSize = unstable_cache(
+    async () => {
+      console.log(
+        `[PackageSize] Calculating size for ${packageName}@${info.version}...`,
+      );
+      return await fetchPackageSize(packageName);
+    },
+    ['npm-size', packageName, info.version],
+    { revalidate: false },
+  );
+
+  const [downloads, packageSize] = await Promise.all([
     fetchNpmDownloads(packageName),
-    fetchPackageSize(packageName),
+    getCachedPackageSize(),
   ]);
 
   return { info, downloads, packageSize };
