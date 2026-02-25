@@ -1,3 +1,8 @@
+import path from 'node:path';
+import util from 'node:util';
+import zlib from 'node:zlib';
+import { type Plugin, rolldown } from 'rolldown';
+import { minify } from 'terser';
 import type {
   NpmDailyDownload,
   NpmDownloadStats,
@@ -5,6 +10,8 @@ import type {
   NpmPackageSize,
   NpmPackageSummary,
 } from '@/types/npm';
+
+const gzipAsync = util.promisify(zlib.gzip);
 
 /**
  * npm Registry からパッケージのメタデータを取得
@@ -75,36 +82,113 @@ export async function fetchNpmDownloads(
 }
 
 /**
- * Packagephobia API からパッケージサイズを取得
+ * http-resolve Plugin
+ * CDNから直接ESモジュールを解決・取得するRollupプラグイン
+ */
+function isHttpProtocol(id: string | undefined | null) {
+  return id?.startsWith('https://');
+}
+
+function httpResolve(): Plugin {
+  return {
+    name: 'http-resolve',
+    async resolveId(id: string, importer: string | undefined) {
+      if (isHttpProtocol(id)) {
+        return id;
+      }
+      // ネットワーク上のモジュールからの相対パス解決
+      if (importer && isHttpProtocol(importer)) {
+        if (id.startsWith('https://')) {
+          return id;
+        }
+        const { pathname, protocol, host } = new URL(importer);
+        if (id.startsWith('/')) {
+          return `${protocol}//${host}${id}`;
+        }
+        if (id.startsWith('.') || id === 'entry.js') {
+          // 例: ./xxx/yyy
+          const resolvedPathname = path.join(path.dirname(pathname), id);
+          return `${protocol}//${host}${resolvedPathname}`;
+        }
+      }
+      return null;
+    },
+    async load(id: string) {
+      if (!id || !isHttpProtocol(id)) return null;
+      try {
+        const res = await fetch(id);
+        if (!res.ok) {
+          throw new Error(`Failed to fetch ${id}: ${res.statusText}`);
+        }
+        return await res.text();
+      } catch (err) {
+        console.error('[http-resolve] fetch error:', err);
+        throw err;
+      }
+    },
+  };
+}
+
+/**
+ * Rolldown と Terser を使用して独自にバンドルサイズ(ツリーシェイキング込み)を計算する
+ * Packagephobia API の代替処理
  */
 export async function fetchPackageSize(
   packageName: string,
 ): Promise<NpmPackageSize | null> {
   try {
-    const res = await fetch(
-      `https://packagephobia.com/api.json?p=${packageName}`,
-      {
-        headers: {
-          'User-Agent': 'ciderjs-dashboard/0.1.0',
-        },
-      },
-    );
+    // esm.sh をデフォルトのCDNとして使用
+    const entryUrl = `https://esm.sh/${packageName}`;
 
-    if (!res.ok) {
-      console.warn(
-        `[Packagephobia] Failed to fetch size for ${packageName}: ${res.status}`,
-      );
-      return null;
+    // パッケージ全体をインポートした際のサイズを計測する仮想エントリーポイント
+    const inputCode = `import * as x from "${entryUrl}"; console.log(x);`;
+
+    const bundle = await rolldown({
+      input: 'entry.js',
+      plugins: [
+        {
+          name: 'entry',
+          resolveId(id, importer) {
+            if (importer == null && id === 'entry.js') {
+              return 'entry.js';
+            }
+            return null;
+          },
+          load(id) {
+            if (id === 'entry.js') {
+              return inputCode;
+            }
+            return null;
+          },
+        },
+        httpResolve(),
+      ],
+      // 外部モジュールの警告などを抑制
+      onwarn(warning, warn) {
+        if (warning.code === 'UNRESOLVED_IMPORT') return;
+        warn(warning);
+      },
+    });
+
+    const generated = await bundle.generate({ format: 'es' });
+    const mainCode = generated.output[0].code;
+
+    // TerserによるMinify
+    const minified = await minify(mainCode, { module: true });
+    if (!minified.code) {
+      throw new Error('Minification failed');
     }
 
-    const data: { publishSize: number; installSize: number } = await res.json();
+    // Gzip圧縮後のサイズを計算
+    const gzipped = await gzipAsync(Buffer.from(minified.code));
+
     return {
-      publishSize: data.publishSize,
-      installSize: data.installSize,
+      publishSize: minified.code.length, // Minify後のサイズ (Bytes)
+      installSize: gzipped.byteLength, // Gzip後のサイズ (Bytes)
     };
   } catch (err) {
     console.warn(
-      `[Packagephobia] Error fetching size for ${packageName}:`,
+      `[SizeCalculator] Error fetching size for ${packageName}:`,
       err,
     );
     return null;
