@@ -1,7 +1,7 @@
 import path from 'node:path';
 import util from 'node:util';
 import zlib from 'node:zlib';
-import { unstable_cache } from 'next/cache';
+import { Redis } from '@upstash/redis';
 import { type Plugin, rolldown } from 'rolldown';
 import { minify } from 'terser';
 import type {
@@ -159,14 +159,34 @@ function httpResolve(): Plugin {
   };
 }
 
+const redis = Redis.fromEnv();
+
+export type RedisValues = Record<
+  string,
+  {
+    version: string;
+    size: NpmPackageSize;
+  }
+>;
+
 /**
  * Rolldown と Terser を使用して独自にバンドルサイズ(ツリーシェイキング込み)を計算する
  * Packagephobia API の代替処理
  */
 export async function fetchPackageSize(
   packageName: string,
+  version: string,
 ): Promise<NpmPackageSize | null> {
   try {
+    const redisKey = 'npm-packages';
+    const cachedValue = await redis.hget<RedisValues[typeof packageName]>(
+      redisKey,
+      packageName,
+    );
+    if (cachedValue?.version === version) {
+      return cachedValue.size;
+    }
+
     // esm.sh をデフォルトのCDNとして使用
     const entryUrl = `https://esm.sh/${packageName}`;
 
@@ -212,10 +232,19 @@ export async function fetchPackageSize(
     // Gzip圧縮後のサイズを計算
     const gzipped = await gzipAsync(Buffer.from(minified.code));
 
-    return {
+    const size = {
       publishSize: minified.code.length, // Minify後のサイズ (Bytes)
       installSize: gzipped.byteLength, // Gzip後のサイズ (Bytes)
     };
+
+    await redis.hset<RedisValues[typeof packageName]>(redisKey, {
+      [packageName]: {
+        version,
+        size,
+      },
+    });
+
+    return size;
   } catch (err) {
     console.warn(`[PackageSize] Error fetching size for ${packageName}:`, err);
     return null;
@@ -230,21 +259,9 @@ export async function fetchNpmPackageSummary(
 ): Promise<NpmPackageSummary> {
   const info = await fetchNpmPackageInfo(packageName);
 
-  // Next.jsの永続キャッシュ機構 (バンドルサイズ計算などの重い処理用)
-  const getCachedPackageSize = unstable_cache(
-    async () => {
-      console.log(
-        `[PackageSize] Calculating size for ${packageName}@${info.version}...`,
-      );
-      return await fetchPackageSize(packageName);
-    },
-    ['npm-size', packageName, info.version],
-    { revalidate: false },
-  );
-
   const [downloads, packageSize] = await Promise.all([
     fetchNpmDownloads(packageName),
-    getCachedPackageSize(),
+    fetchPackageSize(packageName, info.version),
   ]);
 
   return { info, downloads, packageSize };
